@@ -1,0 +1,19 @@
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class RefundBatchRequest extends FormRequest
+{
+    public function rules(): array
+    {
+        return [
+            'refunded_at' => ['nullable', 'date'],
+
+            'items' => ['required', 'array', 'min:1'],
+            'items.*.product_id' => ['required', 'integer', 'distinct', 'exists:products,id'],
+            'items.*.qty' => ['required', 'integer', 'min:1'],
+        ];
+    }
+}
