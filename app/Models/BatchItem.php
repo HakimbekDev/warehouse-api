@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class BatchItem extends Model
 {
@@ -25,5 +26,11 @@ class BatchItem extends Model
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class);
+    }
+
+    /** Arrivals, refunds and sales of this line; its stock is their sum. */
+    public function movements(): HasMany
+    {
+        return $this->hasMany(StockMovement::class);
     }
 }

@@ -57,11 +57,10 @@ class OrderController extends Controller
             'message' => 'Refund registered; the goods returned to storage.',
             'data' => [
                 'order_id' => $order->id,
-                'refunds' => array_map(fn ($refund) => [
-                    'refund_id' => $refund->id,
-                    'order_item_id' => $refund->order_item_id,
-                    'qty' => $refund->qty,
-                    'refunded_at' => $refund->refunded_at->toDateString(),
+                'refunds' => array_map(fn ($row) => [
+                    'order_item_id' => $row['order_item_id'],
+                    'qty' => $row['qty'],
+                    'refunded_at' => $row['moved_at'],
                 ], $refunds),
             ],
         ], 201);

@@ -51,11 +51,10 @@ class PurchaseController extends Controller
             'message' => 'Refund registered; the goods were deducted from storage.',
             'data' => [
                 'batch_id' => $batch->id,
-                'refunds' => array_map(fn ($refund) => [
-                    'refund_id' => $refund->id,
-                    'batch_item_id' => $refund->batch_item_id,
-                    'qty' => $refund->qty,
-                    'refunded_at' => $refund->refunded_at->toDateString(),
+                'refunds' => array_map(fn ($row) => [
+                    'batch_item_id' => $row['batch_item_id'],
+                    'qty' => -$row['qty'],
+                    'refunded_at' => $row['moved_at'],
                 ], $refunds),
             ],
         ], 201);

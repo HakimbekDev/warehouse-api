@@ -30,23 +30,36 @@ provider to exercise the provider/category rule, 2 storages and 3 clients.
 | `batch_items` | Batch lines: product, qty, `purchase_price` |
 | `orders` | One sale to one client, dated `ordered_at` |
 | `order_items` | Order lines, each pointing at the `batch_item` it was picked from |
-| `refunds` | Both directions in one table, distinguished by `type` |
+| `stock_movements` | Every change of stock, as one signed row |
 
 ### Design notes
 
-**No stock table.** Stock is derived from the four events that move goods:
+**Stock is a sum of movements.** Anything that moves goods writes one row:
 
-```
-available = batch_items.qty
-          - refunds(type = purchase)    returned to the provider
-          - order_items.qty             sold to a client
-          + refunds(type = sale)        returned by a client
+| `type` | `qty` | |
+|---|---|---|
+| `purchase` | `+` | arrived from the provider |
+| `purchase_refund` | `−` | sent back to the provider |
+| `sale` | `−` | sold to a client |
+| `sale_refund` | `+` | returned by a client |
+
+So there is one rule for every stock question — sum the rows:
+
+```sql
+-- in storage now
+SELECT SUM(qty) FROM stock_movements WHERE batch_item_id = ?
+
+-- in storage on 5 September
+SELECT SUM(qty) FROM stock_movements WHERE batch_item_id = ? AND moved_at <= '2026-09-05'
 ```
 
-One expression, `StockService::stockPerBatchItem()`, backs ordering, refund limits and both
-reports, so the numbers cannot drift apart. It also takes an optional date, which is what
-makes the historical storage report possible — a running counter only knows today's value,
-so answering "what was on the shelf on 5 September" would need the event history anyway.
+Ordering, refund limits, the historical report and the profit report all come from that
+single expression, so the numbers cannot drift apart, and the date-bounded report is one
+extra `WHERE` rather than a different mechanism.
+
+**Refunds are movements**, which is why there is no separate refunds table — a refund is
+just an arrival or a sale with the opposite sign. Signed quantities also mean the profit
+report needs no special case for them: adding every row up gives the net figures directly.
 
 **A product's provider** is found by walking `categories.parent_id` up to the root and
 reading its `provider_id`. Keeping it only on the root means a child cannot contradict it.
@@ -113,6 +126,10 @@ ordered quantity across several batches when no single batch covers it. Ordering
 is available fails and the whole order rolls back. Rows are locked for the transaction so
 two concurrent orders cannot both take the last unit.
 
+The available stock for every product in the order is fetched in one query and the lines
+are written in one insert, so an order costs the same number of queries whether it holds
+one product or fifty.
+
 ### `POST /orders/{order}/refunds`
 
 ```json
@@ -138,6 +155,9 @@ profit       = net_revenue - cost_of_sold
 Goods refunded to the provider drop out of the cost. Units still on the shelf are an asset,
 not a loss, so they stay out of `profit` — otherwise a fresh batch would always show one;
 they appear as `remaining_qty` against `net_purchase_cost` instead.
+
+The figures are summed in PHP over eager-loaded movements rather than in SQL, which keeps
+the calculation readable and costs a fixed five queries however many batches exist.
 
 ## Not included
 
