@@ -15,10 +15,11 @@ class StockMovement extends Model
     public const SALE = 'sale';
     public const SALE_REFUND = 'sale_refund';
 
-    protected $fillable = ['batch_item_id', 'order_item_id', 'type', 'qty', 'moved_at'];
+    protected $fillable = ['batch_item_id', 'order_id', 'type', 'qty', 'unit_price', 'moved_at'];
 
     protected $casts = [
         'qty' => 'integer',
+        'unit_price' => 'decimal:2',
         'moved_at' => 'date',
     ];
 
@@ -27,12 +28,12 @@ class StockMovement extends Model
         return $this->belongsTo(BatchItem::class);
     }
 
-    public function orderItem(): BelongsTo
+    public function order(): BelongsTo
     {
-        return $this->belongsTo(OrderItem::class);
+        return $this->belongsTo(Order::class);
     }
 
-    /** True for the two types that carry a sale price. */
+    /** True for the two types that belong to an order and carry a sale price. */
     public function isSale(): bool
     {
         return $this->type === self::SALE || $this->type === self::SALE_REFUND;

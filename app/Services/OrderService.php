@@ -3,7 +3,6 @@
 namespace App\Services;
 
 use App\Models\Order;
-use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\StockMovement;
 use Illuminate\Support\Collection;
@@ -20,8 +19,9 @@ class OrderService
      * Create a client order. The caller sends products and quantities only; the
      * batch behind each line is chosen here, oldest stock first.
      *
-     * Everything is fetched and written in bulk, so the cost is a fixed handful
-     * of queries whatever the order contains.
+     * The order's lines are the sale rows of the ledger, so they are written
+     * once, in bulk — the cost is a fixed handful of queries whatever the order
+     * contains.
      */
     public function create(int $clientId, array $products, ?string $orderedAt = null): Order
     {
@@ -39,35 +39,40 @@ class OrderService
                 'ordered_at' => $orderedAt,
             ]);
 
-            $lines = [];
+            $rows = [];
 
             foreach ($products as $line) {
-                $lines = array_merge($lines, $this->allocate(
+                $rows = array_merge($rows, $this->allocate(
                     $queues->get($line['id'], collect()),
                     $ordered[$line['id']],
                     (int) $line['qty'],
                     $order->id,
+                    $orderedAt,
                 ));
             }
 
-            OrderItem::insert($lines);
+            StockMovement::insert($rows);
 
-            $this->recordSales($order, $orderedAt);
-
-            return $order->load('items.batchItem.product', 'items.batchItem.batch', 'client');
+            return $order->load('movements.batchItem.product', 'movements.batchItem.batch', 'client');
         });
     }
 
     /**
-     * Spread one ordered quantity over the oldest batches holding the product.
+     * Spread one ordered quantity over the oldest batches holding the product,
+     * as one sale row per batch drawn from.
      *
      * Pure: it reads the queue it was handed and returns rows to insert, so no
      * query runs per product or per batch line. Ordering 120 against batches of
      * 100 and 80 produces two rows — they have different costs, which per-batch
      * profit depends on.
      */
-    private function allocate(Collection $queue, Product $product, int $qty, int $orderId): array
-    {
+    private function allocate(
+        Collection $queue,
+        Product $product,
+        int $qty,
+        int $orderId,
+        string $orderedAt,
+    ): array {
         $remaining = $qty;
         $rows = [];
         $now = now();
@@ -80,10 +85,12 @@ class OrderService
             $take = min($remaining, (int) $batchLine->available_qty);
 
             $rows[] = [
-                'order_id' => $orderId,
                 'batch_item_id' => $batchLine->id,
-                'qty' => $take,
-                'sale_price' => $product->price,
+                'order_id' => $orderId,
+                'type' => StockMovement::SALE,
+                'qty' => -$take,
+                'unit_price' => $product->price,
+                'moved_at' => $orderedAt,
                 'created_at' => $now,
                 'updated_at' => $now,
             ];
@@ -101,39 +108,20 @@ class OrderService
         return $rows;
     }
 
-    /** One movement row per order line, taking the goods out of storage. */
-    private function recordSales(Order $order, string $orderedAt): void
-    {
-        $now = now();
-
-        $movements = $order->items()->get()->map(fn (OrderItem $item) => [
-            'batch_item_id' => $item->batch_item_id,
-            'order_item_id' => $item->id,
-            'type' => StockMovement::SALE,
-            'qty' => -$item->qty,
-            'moved_at' => $orderedAt,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ])->all();
-
-        StockMovement::insert($movements);
-    }
-
     /**
-     * Take goods back from a client, matching quantities against that order's own
-     * lines. The goods return to the storage of the batch they came from.
+     * Take goods back from a client. The goods return to the storage of the batch
+     * they came from, at the price that order sold them for.
      */
     public function refund(Order $order, array $products, string $refundedAt): array
     {
         return DB::transaction(function () use ($order, $products, $refundedAt) {
-            $items = $order->items()
-                ->with('batchItem')
+            DB::table('stock_movements')
+                ->where('order_id', $order->id)
+                ->select('id')
                 ->lockForUpdate()
-                ->orderBy('id')
                 ->get();
 
-            // How many units of each line are still un-refunded.
-            $refundable = $this->refundableQtyPerItem($items->pluck('id')->all());
+            $lines = $this->outstandingLines($order)->groupBy('product_id');
 
             $rows = [];
             $now = now();
@@ -141,22 +129,19 @@ class OrderService
             foreach ($products as $line) {
                 $remaining = (int) $line['qty'];
 
-                foreach ($items->where('batchItem.product_id', (int) $line['id']) as $item) {
+                foreach ($lines->get((int) $line['id'], collect()) as $outstanding) {
                     if ($remaining <= 0) {
                         break;
                     }
 
-                    $take = min($remaining, $refundable[$item->id] ?? 0);
-
-                    if ($take <= 0) {
-                        continue;
-                    }
+                    $take = min($remaining, (int) $outstanding->refundable);
 
                     $rows[] = [
-                        'batch_item_id' => $item->batch_item_id,
-                        'order_item_id' => $item->id,
+                        'batch_item_id' => $outstanding->batch_item_id,
+                        'order_id' => $order->id,
                         'type' => StockMovement::SALE_REFUND,
                         'qty' => $take,
+                        'unit_price' => $outstanding->unit_price,
                         'moved_at' => $refundedAt,
                         'created_at' => $now,
                         'updated_at' => $now,
@@ -180,15 +165,25 @@ class OrderService
     }
 
     /**
-     * A sale row is negative and its refunds positive, so what is still out with
-     * the client is simply minus their sum. One query for the whole order.
+     * What each line of this order still has out with the client.
+     *
+     * A sale row is negative and its refunds positive, so what is left out is
+     * minus their sum; lines already fully returned drop out on their own.
      */
-    private function refundableQtyPerItem(array $orderItemIds): Collection
+    private function outstandingLines(Order $order): Collection
     {
-        return DB::table('stock_movements')
-            ->whereIn('order_item_id', $orderItemIds)
-            ->groupBy('order_item_id')
-            ->pluck(DB::raw('-SUM(qty)'), 'order_item_id')
-            ->map(fn ($qty) => (int) $qty);
+        return DB::table('stock_movements as m')
+            ->join('batch_items as bi', 'bi.id', '=', 'm.batch_item_id')
+            ->where('m.order_id', $order->id)
+            ->groupBy('m.batch_item_id', 'bi.product_id')
+            ->havingRaw('SUM(m.qty) < 0')
+            ->orderBy('m.batch_item_id')
+            ->select([
+                'm.batch_item_id',
+                'bi.product_id',
+                DB::raw('-SUM(m.qty) AS refundable'),
+                DB::raw('MAX(m.unit_price) AS unit_price'),
+            ])
+            ->get();
     }
 }

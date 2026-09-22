@@ -29,8 +29,7 @@ provider to exercise the provider/category rule, 2 storages and 3 clients.
 | `batches` | One purchase from one provider into one storage, dated `purchased_at` |
 | `batch_items` | Batch lines: product, qty, `purchase_price` |
 | `orders` | One sale to one client, dated `ordered_at` |
-| `order_items` | Order lines, each pointing at the `batch_item` it was picked from |
-| `stock_movements` | Every change of stock, as one signed row |
+| `stock_movements` | The ledger: every change of stock, as one signed row |
 
 ### Design notes
 
@@ -57,25 +56,29 @@ Ordering, refund limits, the historical report and the profit report all come fr
 single expression, so the numbers cannot drift apart, and the date-bounded report is one
 extra `WHERE` rather than a different mechanism.
 
-**Refunds are movements**, which is why there is no separate refunds table — a refund is
-just an arrival or a sale with the opposite sign. Signed quantities also mean the profit
-report needs no special case for them: adding every row up gives the net figures directly.
+**Refunds are movements, and so are order lines.** A refund is an arrival or a sale with
+the opposite sign; an order line *is* the sale row. That is why there is no refunds table
+and no order_items table — both would have restated what the ledger already holds. Each
+row also carries the price it used, so the profit report needs no join to find one, and
+signed quantities mean refunds need no special case: adding every row up gives the net
+figures directly.
+
+`batch_items` stays, because it is the lot FIFO draws from. Folding it in too would make
+the ledger reference itself and split a line's stock across two places — one table fewer,
+much harder to follow.
 
 **A product's provider** is found by walking `categories.parent_id` up to the root and
 reading its `provider_id`. Keeping it only on the root means a child cannot contradict it.
 Buying a product from a provider that does not supply its root category is rejected.
 
-**Three prices, on purpose.** `batch_items.purchase_price` differs per batch, which is what
-makes per-batch profit meaningful. `order_items.sale_price` is copied at the moment of sale,
-so changing a product's price later does not rewrite past orders or past profit.
+**Three prices, on purpose.** `products.price` is what a product sells for today.
+`batch_items.purchase_price` differs per batch, which is what makes per-batch profit
+meaningful. `stock_movements.unit_price` is the price each movement actually used, so
+changing a product's price later cannot rewrite past orders or past profit.
 
-**One refunds table.** Both directions carry the same data — how many units, when. `type`
-says which side it belongs to and fills exactly one of `batch_item_id` / `order_item_id`.
-Two tables would have duplicated the columns and both report queries.
-
-**Order lines point at batches, not products.** `batch_items` already holds both, so one
+**Movements point at batch lines, not products.** `batch_items` already holds both, so one
 foreign key covers it. This is also why ordering 120 units against batches of 100 and 80
-creates two order lines: they have different costs.
+writes two sale rows: they have different costs.
 
 ## Endpoints
 

@@ -20,8 +20,9 @@ class Order extends Model
         return $this->belongsTo(Client::class);
     }
 
-    public function items(): HasMany
+    /** Sales and client refunds of this order; there are no separate order lines. */
+    public function movements(): HasMany
     {
-        return $this->hasMany(OrderItem::class);
+        return $this->hasMany(StockMovement::class)->orderBy('id');
     }
 }

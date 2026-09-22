@@ -56,7 +56,8 @@ class ReportService
      *
      * Because movements are signed, refunds need no special case — a purchase
      * refund is a negative arrival and a sale refund a negative sale, so adding
-     * every row up gives the net figures directly.
+     * every row up gives the net figures directly. Each row carries the price it
+     * used, so nothing has to be joined to find it.
      *
      * Units still on the shelf are an asset, not a loss, so they stay out of the
      * profit line; otherwise a fresh batch would always show one.
@@ -65,7 +66,7 @@ class ReportService
      */
     public function batchProfit(): Collection
     {
-        return Batch::with(['provider', 'items.movements.orderItem'])
+        return Batch::with(['provider', 'items.movements'])
             ->orderBy('purchased_at')
             ->orderBy('id')
             ->get()
@@ -82,7 +83,7 @@ class ReportService
 
                         if ($movement->isSale()) {
                             // sale is negative, sale_refund positive
-                            $netRevenue -= $qty * (float) $movement->orderItem->sale_price;
+                            $netRevenue -= $qty * (float) $movement->unit_price;
                             $costOfSold -= $qty * $cost;
                             $qty < 0 ? $soldQty -= $qty : $clientRefundedQty += $qty;
                         } else {

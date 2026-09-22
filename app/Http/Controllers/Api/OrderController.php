@@ -30,16 +30,15 @@ class OrderController extends Controller
                 'order_id' => $order->id,
                 'client' => $order->client->name,
                 'ordered_at' => $order->ordered_at->toDateString(),
-                'items' => $order->items->map(fn ($item) => [
-                    'order_item_id' => $item->id,
-                    'product_id' => $item->batchItem->product_id,
-                    'product_name' => $item->batchItem->product->name,
-                    'batch_id' => $item->batchItem->batch_id,
-                    'purchased_at' => $item->batchItem->batch->purchased_at->toDateString(),
-                    'qty' => $item->qty,
-                    'sale_price' => (float) $item->sale_price,
+                'items' => $order->movements->map(fn ($sale) => [
+                    'product_id' => $sale->batchItem->product_id,
+                    'product_name' => $sale->batchItem->product->name,
+                    'batch_id' => $sale->batchItem->batch_id,
+                    'purchased_at' => $sale->batchItem->batch->purchased_at->toDateString(),
+                    'qty' => -$sale->qty,
+                    'sale_price' => (float) $sale->unit_price,
                 ]),
-                'total' => round($order->items->sum(fn ($i) => $i->qty * (float) $i->sale_price), 2),
+                'total' => round($order->movements->sum(fn ($s) => -$s->qty * (float) $s->unit_price), 2),
             ],
         ], 201);
     }
@@ -58,7 +57,7 @@ class OrderController extends Controller
             'data' => [
                 'order_id' => $order->id,
                 'refunds' => array_map(fn ($row) => [
-                    'order_item_id' => $row['order_item_id'],
+                    'batch_item_id' => $row['batch_item_id'],
                     'qty' => $row['qty'],
                     'refunded_at' => $row['moved_at'],
                 ], $refunds),
